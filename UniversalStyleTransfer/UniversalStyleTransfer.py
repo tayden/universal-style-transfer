@@ -1,66 +1,36 @@
-from vgg19 import vgg19, vgg19_inv
-from keras.layers import Input, Conv2D
-from keras.models import Model
+import autoencoders
+import encoders
+import decoders
+import numpy as np
 from keras import backend as K
 
 
 class UniversalStyleTransfer(object):
-    def __init__(self, shape):
+    def __init__(self, shape, lam):
         super().__init__()
         self._shape = shape
-        self._input = Input(shape)
+        self._lam = lam
 
-        self._create_autoencoders()
+        # Create autoencoders for training
+        self._autoencoder5 = autoencoders.create_autoencoder_5(self._shape)
+        self._autoencoder4 = autoencoders.create_autoencoder_4(self._shape)
+        self._autoencoder3 = autoencoders.create_autoencoder_3(self._shape)
+        self._autoencoder2 = autoencoders.create_autoencoder_2(self._shape)
+        self._autoencoder1 = autoencoders.create_autoencoder_1(self._shape)
 
-    def _create_autoencoders(self):
-        # Create the encoder models
-        self._encoder5 = self._input
-        self._encoder4 = self._input
-        self._encoder3 = self._input
-        self._encoder2 = self._input
-        self._encoder1 = self._input
+        # Create the encoders for stylizing
+        # self._encoder5 = encoders.create_encoder_5(self._shape)
+        # self._encoder4 = encoders.create_encoder_4(self._shape)
+        # self._encoder3 = encoders.create_encoder_3(self._shape)
+        # self._encoder2 = encoders.create_encoder_2(self._shape)
+        # self._encoder1 = encoders.create_encoder_1(self._shape)
 
-        for layer in vgg19:
-            self._encoder5 = layer(self._encoder5)
-        for layer in vgg19[:13]:
-            self._encoder4 = layer(self._encoder4)
-        for layer in vgg19[:8]:
-            self._encoder3 = layer(self._encoder3)
-        for layer in vgg19[:5]:
-            self._encoder2 = layer(self._encoder2)
-        for layer in vgg19[:2]:
-            self._encoder1 = layer(self._encoder1)
-
-        self._encoder5 = Model(inputs=self._input, outputs=self._encoder5)
-        self._encoder4 = Model(inputs=self._input, outputs=self._encoder4)
-        self._encoder3 = Model(inputs=self._input, outputs=self._encoder3)
-        self._encoder2 = Model(inputs=self._input, outputs=self._encoder2)
-        self._encoder1 = Model(inputs=self._input, outputs=self._encoder1)
-
-        # Create the decoder models
-        self._decoder5 = self._encoder5.output
-        self._decoder4 = self._encoder4.output
-        self._decoder3 = self._encoder3.output
-        self._decoder2 = self._encoder2.output
-        self._decoder1 = self._encoder1.output
-
-        for layer in vgg19_inv:
-            self._decoder5 = layer(self._decoder5)
-        for layer in vgg19_inv[-12:]:
-            self._decoder4 = layer(self._decoder4)
-        for layer in vgg19_inv[-7:]:
-            self._decoder3 = layer(self._decoder3)
-        for layer in vgg19_inv[-4:]:
-            self._decoder2 = layer(self._decoder2)
-        for layer in vgg19_inv[-1:]:
-            self._decoder1 = layer(self._decoder1)
-
-        # Create the autoencoders for training
-        self._autoencoder5 = Model(inputs=self._input, outputs=self._decoder5)
-        self._autoencoder4 = Model(inputs=self._input, outputs=self._decoder4)
-        self._autoencoder3 = Model(inputs=self._input, outputs=self._decoder3)
-        self._autoencoder2 = Model(inputs=self._input, outputs=self._decoder2)
-        self._autoencoder1 = Model(inputs=self._input, outputs=self._decoder1)
+        # Create the decoders for stylizing
+        # self._decoder5 = decoders.create_decoder_5(self._encoder5.output_shape[1:])
+        # self._decoder4 = decoders.create_decoder_4(self._encoder4.output_shape[1:])
+        # self._decoder3 = decoders.create_decoder_3(self._encoder3.output_shape[1:])
+        # self._decoder2 = decoders.create_decoder_2(self._encoder2.output_shape[1:])
+        # self._decoder1 = decoders.create_decoder_1(self._encoder1.output_shape[1:])
 
         self._autoencoders = [
             self._autoencoder1, self._autoencoder2, self._autoencoder3, self._autoencoder4, self._autoencoder5,
@@ -114,18 +84,24 @@ class UniversalStyleTransfer(object):
         pass
 
     @staticmethod
-    def loss_function(y_true, y_pred):
+    def reconstruction_loss(y_true, y_pred):
         # Calculate reconstruction loss
         diff = K.batch_flatten(y_pred - y_true)
         reconstruction_loss = K.mean(K.batch_dot(diff, diff, axes=1))
 
-        # TODO: Also use feature loss
-        # enc_true = self.enc.predict(y_true)
-        # enc_pred = self.enc.predict(y_pred)
-        # diff = K.flatten(enc_pred) - K.flatten(enc_true)
-        # feature_loss = K.dot(K.transpose(diff), diff)
+        return reconstruction_loss
 
-        return reconstruction_loss  # + self.lam * feature_loss
+    def feature_loss(self, _, bottleneck_concat):
+        # Split apart concatenated bottleneck features
+        split_idx = K.int_shape(bottleneck_concat)[-1] // 2
+        y_true_enc = bottleneck_concat[:, :, :, :split_idx]
+        y_pred_enc = bottleneck_concat[:, :, :, split_idx:]
+
+        # Calculate feature loss
+        diff = K.batch_flatten(y_pred_enc - y_true_enc)
+        feature_loss = K.mean(K.batch_dot(diff, diff, axes=1))
+
+        return self._lam * feature_loss
 
 
 if __name__ == '__main__':
@@ -136,17 +112,20 @@ if __name__ == '__main__':
     x_train = x_train.astype('float32') / 255.
     x_test = x_test.astype('float32') / 255.
 
-    model = UniversalStyleTransfer((32, 32, 3))
+    model = UniversalStyleTransfer((32, 32, 3), lam=0.5)
 
-    model.compile(loss=model.loss_function, optimizer='adam')
+    model.compile(optimizer='adam', loss={
+        'reconstruction': model.reconstruction_loss,
+        'feature': model.feature_loss
+    })
     model.fit(
-        x_train, x_train,
+        x_train, [x_train, x_train], # Second label data is not used. Using a hack to get feature_loss working
         epochs=100,
         batch_size=128,
         callbacks=[
             EarlyStopping(patience=3, min_delta=0.1)
         ],
-        validation_data=(x_test, x_test)
+        validation_data=(x_test, [x_test, x_test])
     )
 
-    model.save_weights(prefix="weights/autoencoder")
+    model.save_weights(prefix="autoencoder")
