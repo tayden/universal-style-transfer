@@ -8,8 +8,6 @@ def create_encoder_1(shape):
     _x = Conv2D(3, (1, 1), activation='relu', padding='same', name='enc0_conv1')(_input)
     _encoded = Conv2D(64, (3, 3), activation='relu', padding='same', name='enc1_conv1')(_x)
 
-    _decoded = Conv2D(3, (1, 1), activation='relu', padding='same', name='dec0_conv1')(_encoded)
-
     return Model(inputs=_input, outputs=_encoded)
 
 
