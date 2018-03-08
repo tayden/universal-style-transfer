@@ -66,7 +66,7 @@ class UniversalStyleTransfer(object):
 
         self._set_encoder_decoder_weights()
 
-    def stylize(self, content_img, style_img, alpha=0.5):
+    def stylize(self, content_img, style_img, alpha=1.0):
         """Using the model, stylize the content_img with style from style_img."""
         result = np.expand_dims(content_img, axis=0)
 
@@ -100,70 +100,80 @@ class UniversalStyleTransfer(object):
             e.set_weights(a.layers[1].get_weights())
             d.set_weights(a.layers[2].get_weights())
 
-    def _wct(self, cF, sF, alpha=0.5):
+    def _wct(self, cf, sf, alpha=1.0):
         # squash first dimension
-        cF = np.squeeze(cF, axis=0)
-        sF = np.squeeze(sF, axis=0)
+        cf = np.squeeze(cf, axis=0)
+        sf = np.squeeze(sf, axis=0)
 
         # move the channels axis to front
         # TODO: If image ordering == 'tf'
-        cF = np.moveaxis(cF, 2, 0)
-        sF = np.moveaxis(sF, 2, 0)
+        cf = np.moveaxis(cf, 2, 0)
+        sf = np.moveaxis(sf, 2, 0)
 
-        C, W, H = cF.shape
+        channels, width, height = cf.shape
 
         # Reshape to 2d matrix
-        cF = np.reshape(cF, (C, -1))
-        sF = np.reshape(sF, (C, -1))
+        cf = np.reshape(cf, (channels, -1))
+        sf = np.reshape(sf, (channels, -1))
 
-        cFSize = cF.shape
-        c_mean = np.mean(cF, keepdims=True)
-        cF = cF - c_mean
-        contentConv = np.dot(cF, cF.T)
-        contentConv /= cFSize[1] - 1
-        contentConv += np.eye(cFSize[0])
+        cf_size = cf.shape
+        c_mean = np.mean(cf, keepdims=True)
+        cf -= c_mean
 
-        c_u, c_e, c_v = np.linalg.svd(contentConv)
-        k_c = cFSize[0]
-        for i in range(cFSize[0]):
+        content_covar = np.dot(cf, cf.T)
+
+        content_covar /= cf_size[1] - 1
+        content_covar += np.eye(cf_size[0])
+
+        c_u, c_e, c_v = np.linalg.svd(content_covar)
+        k_c = cf_size[0]
+        for i in range(cf_size[0]):
             if c_e[i] < 0.00001:
                 k_c = i
                 break
 
-        sFSize = sF.shape
-        s_mean = np.mean(sF, keepdims=True)
-        sF = sF - s_mean
-        styleConv = np.dot(sF, sF.T)
-        styleConv /= sFSize[1] - 1
-        styleConv += np.eye(sFSize[0])
+        sf_size = sf.shape
+        s_mean = np.mean(sf, keepdims=True)
+        sf -= s_mean
+        style_covar = np.dot(sf, sf.T)
+        style_covar /= sf_size[1] - 1
+        style_covar += np.eye(sf_size[0])
 
-        s_u, s_e, s_v = np.linalg.svd(styleConv)
-        k_s = sFSize[0]
-        for i in range(sFSize[0]):
+        s_u, s_e, s_v = np.linalg.svd(style_covar)
+        k_s = sf_size[0]
+        for i in range(sf_size[0]):
             if s_e[i] < 0.00001:
                 k_s = i
                 break
 
         c_d = np.power(c_e[0:k_c], -0.5)
         step1 = np.dot(c_v[:, 0:k_c], np.diag(c_d))
-        step2 = np.dot(step1, (c_v[:, 0:k_c].T))
-        whiten_cF = np.dot(step2, cF)
+        step2 = np.dot(step1, c_v[:, 0:k_c].T)
+        whiten_cf = np.dot(step2, cf)
+
+        # XXX: test whiten
+        # cf = whiten_cf
+        # cf = np.reshape(cf, (channels, width, height))
+        # cf = np.moveaxis(cf, 0, 2)
+        # cf = np.expand_dims(cf, axis=0)
+        # return cf
 
         s_d = np.power(s_e[0:k_s], 0.5)
-        targetFeature = np.dot(np.dot(np.dot(s_v[:, 0:k_s], np.diag(s_d)), (s_v[:, 0:k_s].T)), whiten_cF)
-        targetFeature += s_mean
+        target_feature = np.dot(np.dot(np.dot(s_v[:, 0:k_s], np.diag(s_d)), s_v[:, 0:k_s].T), whiten_cf)
+        target_feature += s_mean
 
-        targetFeature = np.reshape(targetFeature, (C, W, H))
-        targetFeature = np.expand_dims(targetFeature, axis=0)
+        target_feature = np.reshape(target_feature, (channels, width, height))
 
-        cF = np.reshape(cF, (C, W, H))
-        ccsF = alpha * targetFeature + (1.0 - alpha) * cF
+        cf = np.reshape(cf, (channels, width, height))
+        ccsf = alpha * target_feature + (1.0 - alpha) * cf
 
         # move the channels axis to back
         # TODO: If image ordering == 'tf'
-        ccsF = np.moveaxis(ccsF, 1, 3)
+        ccsf = np.moveaxis(ccsf, 0, 2)
 
-        return ccsF
+        ccsf = np.expand_dims(ccsf, axis=0)
+
+        return np.clip(ccsf, 0., 1.)
 
     @staticmethod
     def reconstruction_loss(y_true, y_pred):
