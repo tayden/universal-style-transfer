@@ -71,10 +71,36 @@ class UniversalStyleTransfer(object):
         result = np.expand_dims(content_img, axis=0)
 
         for encoder, decoder in zip(self._encoders, self._decoders):
+            # encode images as latent features
             style = encoder.predict(np.expand_dims(style_img, axis=0))
-            result = encoder.predict(result)
-            result = self._wct(result, style, alpha)
+            content = encoder.predict(result)
+
+            # squash first dimension
+            content = np.squeeze(content, axis=0)
+            style = np.squeeze(style, axis=0)
+
+            if K.image_data_format() == 'channels_last':
+                # move the channels axis to front
+                content = np.moveaxis(content, 2, 0)
+                style = np.moveaxis(style, 2, 0)
+
+            result = self._wct(content, style)
+
+            # mix transfered features with content features
+            result = alpha * result + (1.0 - alpha) * content
+
+            if K.image_data_format() == 'channels_last':
+                # move the channels axis to back
+                result = np.moveaxis(result, 0, 2)
+
+            # expand the first dimension
+            result = np.expand_dims(result, axis=0)
+
+            # decode the latent feature
             result = decoder.predict(result)
+
+            # clip to valid range
+            result = np.clip(result, 0., 1.)
 
         return np.squeeze(result, axis=0)
 
@@ -100,16 +126,7 @@ class UniversalStyleTransfer(object):
             e.set_weights(a.layers[1].get_weights())
             d.set_weights(a.layers[2].get_weights())
 
-    def _wct(self, cf, sf, alpha=1.0):
-        # squash first dimension
-        cf = np.squeeze(cf, axis=0)
-        sf = np.squeeze(sf, axis=0)
-
-        # move the channels axis to front
-        # TODO: If image ordering == 'tf'
-        cf = np.moveaxis(cf, 2, 0)
-        sf = np.moveaxis(sf, 2, 0)
-
+    def _wct(self, cf, sf):
         channels, width, height = cf.shape
 
         # Reshape to 2d matrix
@@ -121,10 +138,9 @@ class UniversalStyleTransfer(object):
         cf -= c_mean
 
         content_covar = np.dot(cf, cf.T)
-
         content_covar /= cf_size[1] - 1
-        content_covar += np.eye(cf_size[0])
 
+        # content_covar += np.eye(cf_size[0])
         c_u, c_e, c_v = np.linalg.svd(content_covar)
         k_c = cf_size[0]
         for i in range(cf_size[0]):
@@ -137,7 +153,7 @@ class UniversalStyleTransfer(object):
         sf -= s_mean
         style_covar = np.dot(sf, sf.T)
         style_covar /= sf_size[1] - 1
-        style_covar += np.eye(sf_size[0])
+        # style_covar += np.eye(sf_size[0])
 
         s_u, s_e, s_v = np.linalg.svd(style_covar)
         k_s = sf_size[0]
@@ -147,33 +163,15 @@ class UniversalStyleTransfer(object):
                 break
 
         c_d = np.power(c_e[0:k_c], -0.5)
-        step1 = np.dot(c_v[:, 0:k_c], np.diag(c_d))
-        step2 = np.dot(step1, c_v[:, 0:k_c].T)
-        whiten_cf = np.dot(step2, cf)
-
-        # XXX: test whiten
-        # cf = whiten_cf
-        # cf = np.reshape(cf, (channels, width, height))
-        # cf = np.moveaxis(cf, 0, 2)
-        # cf = np.expand_dims(cf, axis=0)
-        # return cf
-
         s_d = np.power(s_e[0:k_s], 0.5)
+
+        whiten_cf = np.dot(np.dot(np.dot(c_v[:, 0:k_c], np.diag(c_d)), c_v[:, 0:k_c].T), cf)
         target_feature = np.dot(np.dot(np.dot(s_v[:, 0:k_s], np.diag(s_d)), s_v[:, 0:k_s].T), whiten_cf)
         target_feature += s_mean
 
         target_feature = np.reshape(target_feature, (channels, width, height))
 
-        cf = np.reshape(cf, (channels, width, height))
-        ccsf = alpha * target_feature + (1.0 - alpha) * cf
-
-        # move the channels axis to back
-        # TODO: If image ordering == 'tf'
-        ccsf = np.moveaxis(ccsf, 0, 2)
-
-        ccsf = np.expand_dims(ccsf, axis=0)
-
-        return np.clip(ccsf, 0., 1.)
+        return target_feature
 
     @staticmethod
     def reconstruction_loss(y_true, y_pred):
