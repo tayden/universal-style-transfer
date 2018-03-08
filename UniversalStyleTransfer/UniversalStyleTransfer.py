@@ -194,39 +194,3 @@ class UniversalStyleTransfer(object):
         feature_loss = K.mean(K.batch_dot(diff, diff, axes=1))
 
         return self._lam * feature_loss
-
-
-if __name__ == '__main__':
-    from keras.datasets import cifar100
-    from keras.callbacks import EarlyStopping
-
-    (x_train, y_train), (x_test, y_test) = cifar100.load_data()
-    x_train = x_train.astype('float32') / 255.
-    x_test = x_test.astype('float32') / 255.
-
-    model = UniversalStyleTransfer((32, 32, 3), lam=5)
-
-    # TODO: Improve API so users don't need to manually specify loss functions
-    model.compile(optimizer='adam', loss={
-        'reconstruction': model.reconstruction_loss,
-        'feature': model.feature_loss
-    })
-
-    # TODO: Improve API so users don't need to pass two label datasets
-    model.fit(
-        x_train, [x_train, x_train],  # Second label data is not used. Using a hack to get feature_loss working
-        epochs=100,
-        batch_size=128,
-        callbacks=[
-            EarlyStopping(patience=5, min_delta=0.1)
-        ],
-        validation_data=(x_test, [x_test, x_test])
-    )
-
-    model.save_weights(prefix="weights")
-
-
-    # TODO: Sanity check all autoencoder outputs
-    # model._autoencoder5.predict(x_train[0])
-
-    # TODO: Test stylize functions

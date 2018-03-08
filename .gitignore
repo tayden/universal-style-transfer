@@ -104,3 +104,5 @@ ENV/
 .idea/workspace.xml
 .idea/tasks.xml
 .project
+
+datasets/*
